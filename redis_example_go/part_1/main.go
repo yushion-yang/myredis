@@ -171,15 +171,15 @@ func Ex1_4_hssh() {
 //测试redis的zset类型
 func Ex1_5_zset() {
 	{
-		ret, err := redisCli.ZAdd("zset-ey", &redis.Z{Score: 728, Member: "member1"}).Result()
+		ret, err := redisCli.ZAdd("zset-ey", redis.Z{Score: 728, Member: "member1"}).Result()
 		fmt.Println("ret:", ret, " err:", err)
 	}
 	{
-		ret, err := redisCli.ZAdd("zset-ey", &redis.Z{Score: 982, Member: "member0"}).Result()
+		ret, err := redisCli.ZAdd("zset-ey", redis.Z{Score: 982, Member: "member0"}).Result()
 		fmt.Println("ret:", ret, " err:", err)
 	}
 	{
-		ret, err := redisCli.ZAdd("zset-ey", &redis.Z{Score: 982, Member: "member0"}).Result()
+		ret, err := redisCli.ZAdd("zset-ey", redis.Z{Score: 982, Member: "member0"}).Result()
 		fmt.Println("ret:", ret, " err:", err)
 	}
 	{
@@ -191,7 +191,7 @@ func Ex1_5_zset() {
 		//	Min, Max      string
 		//	Offset, Count int64			//limit
 		//}
-		ret, err := redisCli.ZRangeByScore("zset-ey", &redis.ZRangeBy{Min: "0", Max: "800"}).Result()
+		ret, err := redisCli.ZRangeByScore("zset-ey", redis.ZRangeBy{Min: "0", Max: "800"}).Result()
 		fmt.Println("ret:", ret, " err:", err)
 	}
 	{
@@ -280,8 +280,8 @@ func PostArticle(conn *redis.Client, user string, title string, link string) str
 	hmset(conn, article, "title", title, "link", link, "poster", user, "time", now, "votes", 1, "score", score)
 
 	// 将文章添加到根据发布时间排序的有序集合和根据评分排序的有序集合里面。
-	conn.ZAdd("score:", &redis.Z{Score: score, Member: article})
-	conn.ZAdd("time:", &redis.Z{Score: float64(now), Member: article})
+	conn.ZAdd("score:", redis.Z{Score: score, Member: article})
+	conn.ZAdd("time:", redis.Z{Score: float64(now), Member: article})
 	return article_id
 }
 
@@ -333,10 +333,7 @@ func GetGroupArticles(conn *redis.Client, group string, page int, order string) 
 	if conn.Exists(key).Val() == 0 {
 		// 根据评分或者发布时间，对群组文章进行排序。
 		// hash 的集合没有分数 默认分数为1 进行合并的weight为每个集合的权重 在继续集合操作前会乘以该权重
-		conn.ZInterStore(key, &redis.ZStore{
-			Keys:      []string{"group:" + group, order},
-			Aggregate: "MAX",
-		})
+		conn.ZInterStore(key, redis.ZStore{Aggregate: "MAX"}, []string{"group:" + group, order}...)
 		// 让Redis在60秒钟之后自动删除这个有序集合。
 		conn.Expire(key, time.Minute)
 	}

@@ -61,10 +61,10 @@ func update_token1(conn *redis.Client, token string, user string, item string) {
 	// 维持令牌与已登录用户之间的映射。
 	conn.HSet("login:", token, user)
 	// 记录令牌最后一次出现的时间。
-	conn.ZAdd("recent:", &redis.Z{Score: timestamp, Member: token})
+	conn.ZAdd("recent:", redis.Z{Score: timestamp, Member: token})
 	if item != "" {
 		// 记录用户浏览过的商品。
-		conn.ZAdd("viewed:"+token, &redis.Z{Score: timestamp, Member: item})
+		conn.ZAdd("viewed:"+token, redis.Z{Score: timestamp, Member: item})
 		// 移除旧的记录，只保留用户最近浏览过的25个商品。
 		//移除从开始到倒数26的元素
 		conn.ZRemRangeByRank("viewed:"+token, 0, -26)
@@ -164,9 +164,9 @@ func cache_request(conn *redis.Client, request string, callback func(string) str
 //  2-7	缓存计划
 func schedule_row_cache(conn *redis.Client, row_id string, delay float64) {
 	// 先设置数据行的延迟值。
-	conn.ZAdd("delay:", &redis.Z{Score: delay, Member: row_id})
+	conn.ZAdd("delay:", redis.Z{Score: delay, Member: row_id})
 	// 立即缓存数据行。
-	conn.ZAdd("schedule:", &redis.Z{Score: float64(time.Now().Unix()), Member: row_id})
+	conn.ZAdd("schedule:", redis.Z{Score: float64(time.Now().Unix()), Member: row_id})
 }
 
 //  2-8	对数据进行缓存
@@ -196,7 +196,7 @@ func cache_rows(conn *redis.Client) {
 		// 读取数据行。
 		row := InventoryGet(row_id)
 		// 更新调度时间并设置缓存值。
-		conn.ZAdd("schedule:", &redis.Z{Score: float64(now + delay), Member: row_id})
+		conn.ZAdd("schedule:", redis.Z{Score: float64(now + delay), Member: row_id})
 		conn.Set("inv:"+row_id, row, 0)
 	}
 }
@@ -210,9 +210,9 @@ func InventoryGet(rowId string) string {
 func update_token(conn *redis.Client, token string, user string, item string) {
 	timestamp := float64(time.Now().Unix())
 	conn.HSet("login:", token, user)
-	conn.ZAdd("recent:", &redis.Z{Score: timestamp, Member: token})
+	conn.ZAdd("recent:", redis.Z{Score: timestamp, Member: token})
 	if item != "" {
-		conn.ZAdd("viewed:"+token, &redis.Z{Score: timestamp, Member: item})
+		conn.ZAdd("viewed:"+token, redis.Z{Score: timestamp, Member: item})
 		conn.ZRemRangeByRank("viewed:"+token, 0, -26)
 		conn.ZIncrBy("viewed:", -1, item) // 这行代码是新添加的。
 	}
@@ -225,7 +225,7 @@ func rescale_viewed(conn *redis.Client) {
 		// 删除所有排名在20 000名之后的商品。
 		conn.ZRemRangeByRank("viewed:", 20000, -1)
 		// 将浏览次数降低为原来的一半
-		conn.ZInterStore("viewed:", &redis.ZStore{Keys: []string{"viewed:"}, Weights: []float64{0.5}})
+		conn.ZInterStore("viewed:", redis.ZStore{Weights: []float64{0.5}}, []string{"viewed:"}...)
 		// 5分钟之后再执行这个操作。
 		time.Sleep(time.Second * 300)
 	}

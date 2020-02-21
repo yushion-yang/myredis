@@ -83,7 +83,7 @@ func autocomplete_on_prefix(conn *redis.Client, guild string, prefix string) []s
 	zset_name := "members:" + guild
 
 	// 将范围的起始元素和结束元素添加到有序集合里面。
-	conn.ZAdd(zset_name, &redis.Z{Score: 0, Member: start}, &redis.Z{Score: 0, Member: end})
+	conn.ZAdd(zset_name, redis.Z{Score: 0, Member: start}, redis.Z{Score: 0, Member: end})
 	var cmd *redis.StringSliceCmd
 	var items []string
 	for {
@@ -122,7 +122,7 @@ func autocomplete_on_prefix(conn *redis.Client, guild string, prefix string) []s
 
 //加入工会
 func join_guild(conn *redis.Client, guild string, user string) {
-	conn.ZAdd("members:"+guild, &redis.Z{Score: 0, Member: user})
+	conn.ZAdd("members:"+guild, redis.Z{Score: 0, Member: user})
 }
 
 //离开工会
@@ -141,7 +141,7 @@ func list_item(conn *redis.Client, itemid string, sellerid int, price float64) e
 			return errors.New("itemid is not member of inv")
 		}
 		_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-			pipe.ZAdd("market:", &redis.Z{Score: price, Member: item})
+			pipe.ZAdd("market:", redis.Z{Score: price, Member: item})
 			pipe.SRem(inv, itemid)
 			return nil
 		})
@@ -308,7 +308,7 @@ func acquire_semaphore(conn *redis.Client, semname string, limit int64, timeout 
 	// 清理过期的信号量持有者。
 	pipeline.ZRemRangeByScore(semname, "-inf", strconv.Itoa(int(now-timeout)))
 	// 尝试获取信号量。
-	pipeline.ZAdd(semname, &redis.Z{Score: float64(now), Member: identifier})
+	pipeline.ZAdd(semname, redis.Z{Score: float64(now), Member: identifier})
 	// 检查是否成功取得了信号量。
 	limitCmd := pipeline.ZRank(semname, identifier)
 	pipeline.Exec()
@@ -339,15 +339,15 @@ func acquire_fair_semaphore(conn *redis.Client, semname string, limit int64, tim
 	pipeline := conn.Pipeline()
 	// 删除超时的信号量。
 	pipeline.ZRemRangeByScore(semname, "-inf", strconv.Itoa(int(now-timeout)))
-	pipeline.ZInterStore(czset, &redis.ZStore{Keys: []string{czset, semname}, Weights: []float64{1, 0}})
+	pipeline.ZInterStore(czset, redis.ZStore{Weights: []float64{1, 0}}, []string{czset, semname}...)
 
 	// 对计数器执行自增操作，并获取操作执行之后的值。
 	counterCmd := pipeline.Incr(ctr)
 	counter := counterCmd.Val()
 
 	// 尝试获取信号量。
-	pipeline.ZAdd(semname, &redis.Z{Score: float64(now), Member: identifier})
-	pipeline.ZAdd(czset, &redis.Z{Score: float64(counter), Member: identifier})
+	pipeline.ZAdd(semname, redis.Z{Score: float64(now), Member: identifier})
+	pipeline.ZAdd(czset, redis.Z{Score: float64(counter), Member: identifier})
 
 	// 通过检查排名来判断客户端是否取得了信号量。
 	pipeline.ZRank(czset, identifier)
@@ -375,7 +375,7 @@ func release_fair_semaphore(conn *redis.Client, semname string, identifier strin
 //更新信号量的持有时间（续命） ZADD操作会刷新已经存在的值
 func refresh_fair_semaphore(conn *redis.Client, semname string, identifier string) bool {
 	// 更新客户端持有的信号量。
-	if conn.ZAdd(semname, &redis.Z{Score: float64(time.Now().Unix()), Member: identifier}).Val() > 0 {
+	if conn.ZAdd(semname, redis.Z{Score: float64(time.Now().Unix()), Member: identifier}).Val() > 0 {
 		// 告知调用者，客户端已经失去了信号量。
 		release_fair_semaphore(conn, semname, identifier)
 		return false
@@ -494,7 +494,7 @@ func execute_later(conn *redis.Client, queue string, name string, args string, d
 	item := string(bytes)
 	if delay > 0 {
 		// 延迟执行这个任务。
-		conn.ZAdd("delayed:", &redis.Z{Score: float64(time.Now().Unix() + delay), Member: item})
+		conn.ZAdd("delayed:", redis.Z{Score: float64(time.Now().Unix() + delay), Member: item})
 	} else {
 		// 立即执行这个任务。
 		conn.RPush("queue:"+queue, item)
@@ -544,9 +544,9 @@ func create_chat(conn *redis.Client, sender string, recipients []string, message
 	}
 	// 创建一个由用户和分值组成的字典，字典里面的信息将被添加到有序集合里面。
 	recipients = append(recipients, sender)
-	recipientsd := make([]*redis.Z, len(recipients))
+	recipientsd := make([]redis.Z, len(recipients))
 	for i, v := range recipients {
-		recipientsd[i] = &redis.Z{Member: v}
+		recipientsd[i] = redis.Z{Member: v}
 	}
 
 	pipeline := conn.Pipeline()
@@ -554,7 +554,7 @@ func create_chat(conn *redis.Client, sender string, recipients []string, message
 	pipeline.ZAdd("chat:"+chat_id, recipientsd...)
 	// 初始化已读有序集合。
 	for _, rec := range recipients {
-		pipeline.ZAdd("seen:"+rec, &redis.Z{Score: 0, Member: chat_id})
+		pipeline.ZAdd("seen:"+rec, redis.Z{Score: 0, Member: chat_id})
 	}
 	pipeline.Exec()
 
@@ -581,7 +581,7 @@ func send_message(conn *redis.Client, chat_id string, sender string, message str
 	})
 
 	// 将消息发送至群组。
-	conn.ZAdd("msgs:"+chat_id, &redis.Z{Score: float64(mid), Member: packed})
+	conn.ZAdd("msgs:"+chat_id, redis.Z{Score: float64(mid), Member: packed})
 	release_lock(conn, "chat:"+chat_id, identifier)
 	return chat_id
 }
@@ -603,7 +603,7 @@ func fetch_pending_messages(conn *redis.Client, recipient string) []ChatInfo {
 	cmds := make([]*redis.StringSliceCmd, len(seen))
 	for i, v := range seen {
 		chat_id, seen_id := v.Member.(string), v.Score
-		cmds[i] = pipeline.ZRangeByScore("msgs:"+chat_id, &redis.ZRangeBy{Min: strconv.Itoa(int(seen_id + 1)), Max: "inf"})
+		cmds[i] = pipeline.ZRangeByScore("msgs:"+chat_id, redis.ZRangeBy{Min: strconv.Itoa(int(seen_id + 1)), Max: "inf"})
 	}
 	// 这些数据将被返回给函数调用者。
 	//chat_info := zip(seen, pipeline.Exec())
@@ -619,13 +619,13 @@ func fetch_pending_messages(conn *redis.Client, recipient string) []ChatInfo {
 		//messages[:] := map(json.loads,	messages)
 		// 使用最新收到的消息来更新群组有序集合。
 		seen_id := messages[len(messages)-1]["id"].(float64)
-		conn.ZAdd("chat:"+chat_id, &redis.Z{Score: seen_id, Member: recipient})
+		conn.ZAdd("chat:"+chat_id, redis.Z{Score: seen_id, Member: recipient})
 
 		// 找出那些所有人都已经阅读过的消息。
 		min_id := conn.ZRangeWithScores("chat:"+chat_id, 0, 0).Val()
 
 		// 更新已读消息有序集合。
-		pipeline.ZAdd("seen:"+recipient, &redis.Z{Score: seen_id, Member: chat_id})
+		pipeline.ZAdd("seen:"+recipient, redis.Z{Score: seen_id, Member: chat_id})
 		if min_id == nil || len(min_id) == 0 {
 			// 清除那些已经被所有人阅读过的消息。
 			pipeline.ZRemRangeByScore("msgs:"+chat_id, "0", strconv.Itoa(int(min_id[0].Score)))
@@ -643,9 +643,9 @@ func join_chat(conn *redis.Client, chat_id string, user string) {
 
 	pipeline := conn.Pipeline()
 	// 将用户添加到群组成员列表里面。
-	pipeline.ZAdd("chat:"+chat_id, &redis.Z{Score: message_id, Member: user})
+	pipeline.ZAdd("chat:"+chat_id, redis.Z{Score: message_id, Member: user})
 	// 将群组添加到用户的已读列表里面。
-	pipeline.ZAdd("seen:"+user, &redis.Z{Score: message_id, Member: chat_id})
+	pipeline.ZAdd("seen:"+user, redis.Z{Score: message_id, Member: chat_id})
 	pipeline.Exec()
 }
 
@@ -692,7 +692,7 @@ func daily_country_aggregate(conn *redis.Client, line string) {
 	items := make(map[string]string)
 	//for	day, aggregate :=range aggregates.items(){
 	for day, aggregate := range items {
-		conn.ZAdd("daily:country:"+day, &redis.Z{Member: aggregate})
+		conn.ZAdd("daily:country:"+day, redis.Z{Member: aggregate})
 		delete(aggregates, day)
 	}
 }

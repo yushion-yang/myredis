@@ -131,7 +131,7 @@ func update_counter(conn *redis.Client, name string, count int64, now int64) {
 		hash := fmt.Sprintf("%v:%v", prec, name)
 		// 将计数器的引用信息添加到有序集合里面，
 		// 并将其分值设置为0，以便在之后执行清理操作。
-		pipe.ZAdd("known:", &redis.Z{Member: hash})
+		pipe.ZAdd("known:", redis.Z{Member: hash})
 		// 对给定名字和精度的计数器进行更新。
 		pipe.HIncrBy("count:"+hash, strconv.Itoa(int(pnow)), count)
 	}
@@ -269,12 +269,12 @@ func update_stats(conn *redis.Client, context string, type_ string, value int64,
 				tkey1 := core.GenID()
 				tkey2 := core.GenID()
 				// 将值添加到临时键里面。
-				pipe.ZAdd(tkey1, &redis.Z{Score: float64(value), Member: "min"})
-				pipe.ZAdd(tkey2, &redis.Z{Score: float64(value), Member: "max"})
+				pipe.ZAdd(tkey1, redis.Z{Score: float64(value), Member: "min"})
+				pipe.ZAdd(tkey2, redis.Z{Score: float64(value), Member: "max"})
 				// 使用合适聚合函数MIN和MAX，
 				// 对存储统计数据的键和两个临时键进行并集计算。
-				pipe.ZUnionStore(destination, &redis.ZStore{Keys: []string{destination, tkey1}, Aggregate: "MIN"})
-				pipe.ZUnionStore(destination, &redis.ZStore{Keys: []string{destination, tkey2}, Aggregate: "MAX"})
+				pipe.ZUnionStore(destination, redis.ZStore{Aggregate: "MIN"}, []string{destination, tkey1}...)
+				pipe.ZUnionStore(destination, redis.ZStore{Aggregate: "MAX"}, []string{destination, tkey2}...)
 
 				// 删除临时键。
 				pipe.Del(tkey1, tkey2)
@@ -342,7 +342,7 @@ func access_time(conn *redis.Client, context string) {
 
 	pipe := conn.Pipeline()
 	// 将页面的平均访问时长添加到记录最慢访问时间的有序集合里面。
-	pipe.ZAdd("slowest:AccessTime", &redis.Z{Score: average, Member: context})
+	pipe.ZAdd("slowest:AccessTime", redis.Z{Score: average, Member: context})
 	// AccessTime有序集合只会保留最慢的100条记录。
 	pipe.ZRemRangeByRank("slowest:AccessTime", 0, -101)
 	pipe.Exec()

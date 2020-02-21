@@ -66,7 +66,7 @@ func Ex3_2() {
 func update_token(conn *redis.Client, token string, user string, item string) {
 	timestamp := float64(time.Now().Unix())
 	conn.HSet("login:", token, user)
-	conn.ZAdd("recent:", &redis.Z{Score: timestamp, Member: token})
+	conn.ZAdd("recent:", redis.Z{Score: timestamp, Member: token})
 	if item != "" {
 		key := "viewed:" + token
 		// 如果指定的元素存在于列表当中，那么移除它

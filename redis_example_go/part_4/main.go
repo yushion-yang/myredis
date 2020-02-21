@@ -101,7 +101,7 @@ func process_logs(conn *redis.Client, path string, callback func(redis.Pipeliner
 func wait_for_sync(mconn *redis.Client, sconn *redis.Client) {
 	identifier := core.GenID()
 	// 将令牌添加至主服务器。
-	mconn.ZAdd("sync:wait", &redis.Z{Member: identifier, Score: float64(time.Now().Unix())})
+	mconn.ZAdd("sync:wait", redis.Z{Member: identifier, Score: float64(time.Now().Unix())})
 
 	// 如果有必要的话，等待从服务器完成同步。
 	for sconn.Info("master_link_status").Val() != "up" {
@@ -142,7 +142,7 @@ func list_item(conn *redis.Client, itemid string, sellerid string, price int) bo
 				return errors.New("!pipe.SIsMember(inventory, itemid).Val()")
 			}
 			_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
-				pipe.ZAdd("market:", &redis.Z{Score: float64(price), Member: item})
+				pipe.ZAdd("market:", redis.Z{Score: float64(price), Member: item})
 				pipe.SRem(inventory, itemid)
 				return nil
 			})
@@ -207,10 +207,10 @@ func update_token(conn *redis.Client, token string, user string, item string) {
 	// 创建令牌与已登录用户之间的映射。
 	conn.HSet("login:", token, user)
 	// 记录令牌最后一次出现的时间。
-	conn.ZAdd("recent:", &redis.Z{Score: float64(timestamp), Member: token})
+	conn.ZAdd("recent:", redis.Z{Score: float64(timestamp), Member: token})
 	if item != "" {
 		// 把用户浏览过的商品记录起来。
-		conn.ZAdd("viewed:"+token, &redis.Z{Score: float64(timestamp), Member: token})
+		conn.ZAdd("viewed:"+token, redis.Z{Score: float64(timestamp), Member: token})
 		// 移除旧商品，只记录最新浏览的25件商品。
 		conn.ZRemRangeByRank("viewed:"+token, 0, -26)
 		// 更新给定商品的被浏览次数。
@@ -224,9 +224,9 @@ func update_token_pipeline(conn *redis.Client, token string, user string, item s
 	// 设置流水线。
 	pipe := conn.Pipeline() //A
 	pipe.HSet("login:", token, user)
-	pipe.ZAdd("recent:", &redis.Z{Score: float64(timestamp), Member: token})
+	pipe.ZAdd("recent:", redis.Z{Score: float64(timestamp), Member: token})
 	if item != "" {
-		pipe.ZAdd("viewed:"+token, &redis.Z{Score: float64(timestamp), Member: item})
+		pipe.ZAdd("viewed:"+token, redis.Z{Score: float64(timestamp), Member: item})
 		pipe.ZRemRangeByRank("viewed:"+token, 0, -26)
 		pipe.ZIncrBy("viewed:", -1, item)
 	}

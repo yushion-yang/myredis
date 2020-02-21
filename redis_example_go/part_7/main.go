@@ -87,7 +87,7 @@ func Test(conn *redis.Client) {
 	for no, arr := range datas {
 		for _, v := range arr {
 			keyName := "zset" + strconv.Itoa(no)
-			conn.ZAdd(keyName, &redis.Z{Score: v.score, Member: v.member})
+			conn.ZAdd(keyName, redis.Z{Score: v.score, Member: v.member})
 		}
 	}
 	base := []string{"item1", "item2", "item3", "item4"}
