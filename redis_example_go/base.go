@@ -1,7 +1,8 @@
 package main
 
 import (
-	"github.com/go-redis/redis"
+	"context"
+	"github.com/go-redis/redis/v8"
 	"redis-learn/core"
 )
 
@@ -9,9 +10,11 @@ var redisCli *redis.Client
 
 //初始化连接
 func init() {
-	redisCli = core.InitRedis("127.0.0.1:6379", "", 0)
+	ctx := context.Background()
+	redisCli = core.InitRedis(ctx, "127.0.0.1:6379", "", 0)
 }
 
 func main() {
-	core.ClearAllKeys(redisCli)
+	ctx := context.Background()
+	core.ClearAllKeys(ctx, redisCli)
 }

@@ -1,8 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
 	"redis-learn/core"
 	"strconv"
 	"time"
@@ -12,12 +13,14 @@ var redisCli *redis.Client
 
 func main() {
 	Test(redisCli)
-	core.ClearAllKeys(redisCli)
+	ctx := context.Background()
+	core.ClearAllKeys(ctx, redisCli)
 }
 
 //初始化连接
 func init() {
-	redisCli = core.InitRedis("127.0.0.1:6379", "", 0)
+	ctx := context.Background()
+	redisCli = core.InitRedis(ctx, "127.0.0.1:6379", "", 0)
 }
 
 //交 并 差  运算  使用redis的sort功能
@@ -26,28 +29,29 @@ func init() {
 
 //可以使用有序集合记录字符串的分值来对字符串进行排序
 func Test(conn *redis.Client) {
+	ctx := context.Background()
 	items1 := []string{"item1", "item2", "item3"}
 	items2 := []string{"item1", "item2", "item4"}
 	items3 := []string{"item2", "item3"}
-	conn.SAdd("set1", items1)
-	conn.SAdd("set2", items2)
-	conn.SAdd("set3", items3)
+	conn.SAdd(ctx, "set1", items1)
+	conn.SAdd(ctx, "set2", items2)
+	conn.SAdd(ctx, "set3", items3)
 
-	fmt.Println("conn.SInter set1,set2 :", conn.SInter("set1", "set2").Val())
-	fmt.Println("conn.SInter set1,set3 :", conn.SInter("set1", "set3").Val())
-	fmt.Println("conn.SInter set2,set3 :", conn.SInter("set2", "set3").Val())
-	conn.SInterStore("destination", "set1", "set2")
-	fmt.Println("conn.SUnion set1,set2 :", conn.SUnion("set1", "set2").Val())
-	fmt.Println("conn.SUnion set1,set3 :", conn.SUnion("set1", "set3").Val())
-	fmt.Println("conn.SUnion set2,set3 :", conn.SUnion("set2", "set3").Val())
-	conn.SUnionStore("destination", "set1", "set2")
-	fmt.Println("conn.SDiff set1,set2 :", conn.SDiff("set1", "set2").Val())
-	fmt.Println("conn.SDiff set2,set1 :", conn.SDiff("set2", "set1").Val())
-	fmt.Println("conn.SDiff set1,set3 :", conn.SDiff("set1", "set3").Val())
-	fmt.Println("conn.SDiff set3,set1 :", conn.SDiff("set3", "set1").Val())
-	fmt.Println("conn.SDiff set2,set3 :", conn.SDiff("set2", "set3").Val())
-	fmt.Println("conn.SDiff set3,set2 :", conn.SDiff("set3", "set2").Val())
-	conn.SDiffStore("destination", "set1", "set2")
+	fmt.Println("conn.SInter set1,set2 :", conn.SInter(ctx, "set1", "set2").Val())
+	fmt.Println("conn.SInter set1,set3 :", conn.SInter(ctx, "set1", "set3").Val())
+	fmt.Println("conn.SInter set2,set3 :", conn.SInter(ctx, "set2", "set3").Val())
+	conn.SInterStore(ctx, "destination", "set1", "set2")
+	fmt.Println("conn.SUnion set1,set2 :", conn.SUnion(ctx, "set1", "set2").Val())
+	fmt.Println("conn.SUnion set1,set3 :", conn.SUnion(ctx, "set1", "set3").Val())
+	fmt.Println("conn.SUnion set2,set3 :", conn.SUnion(ctx, "set2", "set3").Val())
+	conn.SUnionStore(ctx, "destination", "set1", "set2")
+	fmt.Println("conn.SDiff set1,set2 :", conn.SDiff(ctx, "set1", "set2").Val())
+	fmt.Println("conn.SDiff set2,set1 :", conn.SDiff(ctx, "set2", "set1").Val())
+	fmt.Println("conn.SDiff set1,set3 :", conn.SDiff(ctx, "set1", "set3").Val())
+	fmt.Println("conn.SDiff set3,set1 :", conn.SDiff(ctx, "set3", "set1").Val())
+	fmt.Println("conn.SDiff set2,set3 :", conn.SDiff(ctx, "set2", "set3").Val())
+	fmt.Println("conn.SDiff set3,set2 :", conn.SDiff(ctx, "set3", "set2").Val())
+	conn.SDiffStore(ctx, "destination", "set1", "set2")
 
 	now := time.Now().Unix()
 
@@ -87,11 +91,11 @@ func Test(conn *redis.Client) {
 	for no, arr := range datas {
 		for _, v := range arr {
 			keyName := "zset" + strconv.Itoa(no)
-			conn.ZAdd(keyName, redis.Z{Score: v.score, Member: v.member})
+			conn.ZAdd(ctx, keyName, &redis.Z{Score: v.score, Member: v.member})
 		}
 	}
 	base := []string{"item1", "item2", "item3", "item4"}
-	conn.SAdd("base", base)
+	conn.SAdd(ctx, "base", base)
 
 	zustores := []*redis.ZStore{
 		{ //按点击数量排序
@@ -119,8 +123,8 @@ func Test(conn *redis.Client) {
 	for _, v := range zustores {
 		for _, agg := range aggregates {
 			v.Aggregate = agg
-			conn.ZUnionStore("destination", v)
-			fmt.Println("conn.ZUnionStore keys:", v.Keys, " aggregates:", agg, " ret:", conn.ZRangeWithScores("destination", 0, -1).Val())
+			conn.ZUnionStore(ctx, "destination", v)
+			fmt.Println("conn.ZUnionStore keys:", v.Keys, " aggregates:", agg, " ret:", conn.ZRangeWithScores(ctx, "destination", 0, -1).Val())
 		}
 	}
 
@@ -150,15 +154,15 @@ func Test(conn *redis.Client) {
 	for _, v := range zistores {
 		for _, agg := range aggregates {
 			v.Aggregate = agg
-			conn.ZInterStore("destination", v)
-			fmt.Println("conn.ZInterStore keys:", v.Keys, " aggregates:", agg, " ret:", conn.ZRangeWithScores("destination", 0, -1).Val())
+			conn.ZInterStore(ctx, "destination", v)
+			fmt.Println("conn.ZInterStore keys:", v.Keys, " aggregates:", agg, " ret:", conn.ZRangeWithScores(ctx, "destination", 0, -1).Val())
 		}
 	}
 
 	//通过将一个不存在的键作为参数传给 BY 选项， 可以让 SORT 跳过排序操作， 直接返回结果
 	//这种用法和 GET 选项配合， 就可以在不排序的情况下， 获取多个外部键， 相当于执行一个整合的获取操作（类似于 SQL 数据库的 join 关键字）。
 	//将具备某个前缀的一堆键名的后半部分存储在一个集合中，通过sort的这个方法可以一次性拿取到所有键值
-	conn.Sort("key", &redis.Sort{
+	conn.Sort(ctx, "key", &redis.Sort{
 		//By            string	//通过使用 BY 选项，可以让按其他键的元素来排序 例如user_level_{uid} SORT uid BY user_level_*
 		//甚至可以将哈希作为外部键来使用SORT uid BY user_info_*->level
 		//Offset, Count int64	//LIMIT 修饰符限制返回结果
@@ -169,12 +173,12 @@ func Test(conn *redis.Client) {
 	})
 	temps := []string{"sfsfys", "yys", "zdfdswe", "zdfdsweersfs"}
 	for i, v := range base {
-		conn.Set(v, temps[i], 0)
+		conn.Set(ctx, v, temps[i], 0)
 	}
 	//TODO 不是string类型不行!
 	nums := []string{"4", "2", "3", "1"}
-	conn.SAdd("temp", nums)
-	cint := conn.SortStore("temp", "store", &redis.Sort{
+	conn.SAdd(ctx, "temp", nums)
+	cint := conn.SortStore(ctx, "temp", "store", &redis.Sort{
 		Get:   []string{"#", "item*"},
 		By:    "item*",
 		Alpha: true,
@@ -182,7 +186,7 @@ func Test(conn *redis.Client) {
 	fmt.Println("cint:", cint)
 	//fmt.Println("store type:",conn.Type("store"))
 	//sort temp by item* get item* get # alpha
-	fmt.Println("store:", conn.LRange("store", 0, -1).Val())
+	fmt.Println("store:", conn.LRange(ctx, "store", 0, -1).Val())
 }
 
 //

@@ -1,9 +1,10 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
+	"github.com/pkg/errors"
 	"io/ioutil"
 	"os"
 	"redis-learn/core"
@@ -14,7 +15,8 @@ import (
 var redisCli *redis.Client
 
 func init() {
-	redisCli = core.InitRedis("127.0.0.1:6379", "", 0)
+	ctx := context.Background()
+	redisCli = core.InitRedis(ctx, "127.0.0.1:6379", "", 0)
 }
 
 type Users_Id struct {
@@ -46,8 +48,9 @@ func GetFilesAndDirs(dirPth string) []string {
 // 这个回调函数接受一个Redis连接和一个日志行作为参数，
 // 并通过调用流水线对象的方法来执行Redis命令。
 func process_logs(conn *redis.Client, path string, callback func(redis.Pipeliner, string) string) {
+	ctx := context.Background()
 	// 获取文件当前的处理进度。
-	ret := conn.MGet("progress:file", "progress:position").Val()
+	ret := conn.MGet(ctx, "progress:file", "progress:position").Val()
 	current_file, offset := ret[0].(int), ret[1].(int64)
 
 	pipe := conn.Pipeline()
@@ -55,10 +58,10 @@ func process_logs(conn *redis.Client, path string, callback func(redis.Pipeliner
 	// 通过使用闭包（closure）来减少重复代码
 	update_progress := func(pipe redis.Pipeliner, fname int, offset int64) {
 		// 更新正在处理的日志文件的名字和偏移量。
-		pipe.MSet("progress:file", fname, "progress:position", offset)
+		pipe.MSet(ctx, "progress:file", fname, "progress:position", offset)
 		// 这个语句负责执行实际的日志更新操作，
 		// 并将日志文件的名字和目前的处理进度记录到Redis里面。
-		pipe.Exec()
+		pipe.Exec(ctx)
 	}
 	// 有序地遍历各个日志文件。
 	for fname := range GetFilesAndDirs(path) {
@@ -99,35 +102,37 @@ func process_logs(conn *redis.Client, path string, callback func(redis.Pipeliner
 }
 
 func wait_for_sync(mconn *redis.Client, sconn *redis.Client) {
+	ctx := context.Background()
 	identifier := core.GenID()
 	// 将令牌添加至主服务器。
-	mconn.ZAdd("sync:wait", redis.Z{Member: identifier, Score: float64(time.Now().Unix())})
+	mconn.ZAdd(ctx, "sync:wait", &redis.Z{Member: identifier, Score: float64(time.Now().Unix())})
 
 	// 如果有必要的话，等待从服务器完成同步。
-	for sconn.Info("master_link_status").Val() != "up" {
+	for sconn.Info(ctx, "master_link_status").Val() != "up" {
 		time.Sleep(time.Microsecond)
 	}
 	// 等待从服务器接收数据更新。
-	for sconn.ZScore("sync:wait", identifier).Val() <= 0 {
+	for sconn.ZScore(ctx, "sync:wait", identifier).Val() <= 0 {
 		time.Sleep(time.Microsecond)
 	}
 	// 最多只等待一秒钟。
 	deadline := float64(time.Now().Unix()) + 1.01
 	for float64(time.Now().Unix()) < deadline {
 		// 检查数据更新是否已经被同步到了磁盘。
-		if i, _ := sconn.Info("aof_pending_bio_fsync").Int(); i == 0 {
+		if i, _ := sconn.Info(ctx, "aof_pending_bio_fsync").Int(); i == 0 {
 			break
 		}
 		time.Sleep(time.Microsecond)
 	}
 
 	// 清理刚刚创建的新令牌以及之前可能留下的旧令牌。
-	mconn.ZRem("sync:wait", identifier)
-	mconn.ZRemRangeByScore("sync:wait", "0", strconv.Itoa(int(time.Now().Unix()-900)))
+	mconn.ZRem(ctx, "sync:wait", identifier)
+	mconn.ZRemRangeByScore(ctx, "sync:wait", "0", strconv.Itoa(int(time.Now().Unix()-900)))
 }
 
 //代码清单 4-5
 func list_item(conn *redis.Client, itemid string, sellerid string, price int) bool {
+	ctx := context.Background()
 	inventory := "inventory:" + sellerid
 	item := itemid + sellerid
 	end := time.Now().Unix() + 5
@@ -136,19 +141,19 @@ func list_item(conn *redis.Client, itemid string, sellerid string, price int) bo
 	for time.Now().Unix() < end {
 		// 监视用户包裹发生的变化。
 		txf := func(tx *redis.Tx) error {
-			if !pipe.SIsMember(inventory, itemid).Val() {
+			if !pipe.SIsMember(ctx, inventory, itemid).Val() {
 				// 如果指定的物品不在用户的包裹里面，
 				// 那么停止对包裹键的监视并返回一个空值。
 				return errors.New("!pipe.SIsMember(inventory, itemid).Val()")
 			}
-			_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
-				pipe.ZAdd("market:", redis.Z{Score: float64(price), Member: item})
-				pipe.SRem(inventory, itemid)
+			_, err := tx.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.ZAdd(ctx, "market:", &redis.Z{Score: float64(price), Member: item})
+				pipe.SRem(ctx, inventory, itemid)
 				return nil
 			})
 			return err
 		}
-		err := conn.Watch(txf, inventory)
+		err := conn.Watch(ctx, txf, inventory)
 		if err != redis.TxFailedErr {
 			fmt.Println("err:", err)
 			return true
@@ -161,6 +166,7 @@ func list_item(conn *redis.Client, itemid string, sellerid string, price int) bo
 
 //出售商品
 func purchase_item(conn *redis.Client, buyerid string, itemid string, sellerid string, lprice int) bool {
+	ctx := context.Background()
 	buyer := "users:" + buyerid
 	seller := "users:" + sellerid
 	item := itemid + sellerid
@@ -173,23 +179,23 @@ func purchase_item(conn *redis.Client, buyerid string, itemid string, sellerid s
 		txf := func(tx *redis.Tx) error {
 			// 检查指定物品的价格是否出现了变化，
 			// 以及买家是否有足够的钱来购买指定的物品。
-			price := int(pipe.ZScore("market:", item).Val())
-			funds, _ := pipe.HGet(buyer, "funds").Int()
+			price := int(pipe.ZScore(ctx, "market:", item).Val())
+			funds, _ := pipe.HGet(ctx, buyer, "funds").Int()
 			if price != lprice || price > funds {
 				//pipe.unwatch()
 				return errors.New("price != lprice || price > funds")
 			}
-			_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
+			_, err := tx.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				// 将买家支付的货款转移给卖家，并将卖家出售的物品移交给买家。
-				pipe.HIncrBy(seller, "funds", int64(price))
-				pipe.HIncrBy(buyer, "funds", int64(-price))
-				pipe.SAdd(inventory, itemid)
-				pipe.ZRem("market:", item)
+				pipe.HIncrBy(ctx, seller, "funds", int64(price))
+				pipe.HIncrBy(ctx, buyer, "funds", int64(-price))
+				pipe.SAdd(ctx, inventory, itemid)
+				pipe.ZRem(ctx, "market:", item)
 				return nil
 			})
 			return err
 		}
-		err := conn.Watch(txf, inventory)
+		err := conn.Watch(ctx, txf, inventory)
 		if err != redis.TxFailedErr {
 			fmt.Println("err:", err)
 			return true
@@ -202,36 +208,38 @@ func purchase_item(conn *redis.Client, buyerid string, itemid string, sellerid s
 
 //更新令牌
 func update_token(conn *redis.Client, token string, user string, item string) {
+	ctx := context.Background()
 	// 获取时间戳。
 	timestamp := time.Now().Unix()
 	// 创建令牌与已登录用户之间的映射。
-	conn.HSet("login:", token, user)
+	conn.HSet(ctx, "login:", token, user)
 	// 记录令牌最后一次出现的时间。
-	conn.ZAdd("recent:", redis.Z{Score: float64(timestamp), Member: token})
+	conn.ZAdd(ctx, "recent:", &redis.Z{Score: float64(timestamp), Member: token})
 	if item != "" {
 		// 把用户浏览过的商品记录起来。
-		conn.ZAdd("viewed:"+token, redis.Z{Score: float64(timestamp), Member: token})
+		conn.ZAdd(ctx, "viewed:"+token, &redis.Z{Score: float64(timestamp), Member: token})
 		// 移除旧商品，只记录最新浏览的25件商品。
-		conn.ZRemRangeByRank("viewed:"+token, 0, -26)
+		conn.ZRemRangeByRank(ctx, "viewed:"+token, 0, -26)
 		// 更新给定商品的被浏览次数。
-		conn.ZIncrBy("viewed:", -1, item)
+		conn.ZIncrBy(ctx, "viewed:", -1, item)
 	}
 }
 
 //使用流水线的方式更新令牌
 func update_token_pipeline(conn *redis.Client, token string, user string, item string) {
+	ctx := context.Background()
 	timestamp := time.Now().Unix()
 	// 设置流水线。
 	pipe := conn.Pipeline() //A
-	pipe.HSet("login:", token, user)
-	pipe.ZAdd("recent:", redis.Z{Score: float64(timestamp), Member: token})
+	pipe.HSet(ctx, "login:", token, user)
+	pipe.ZAdd(ctx, "recent:", &redis.Z{Score: float64(timestamp), Member: token})
 	if item != "" {
-		pipe.ZAdd("viewed:"+token, redis.Z{Score: float64(timestamp), Member: item})
-		pipe.ZRemRangeByRank("viewed:"+token, 0, -26)
-		pipe.ZIncrBy("viewed:", -1, item)
+		pipe.ZAdd(ctx, "viewed:"+token, &redis.Z{Score: float64(timestamp), Member: item})
+		pipe.ZRemRangeByRank(ctx, "viewed:"+token, 0, -26)
+		pipe.ZIncrBy(ctx, "viewed:", -1, item)
 	}
 	// 执行那些被流水线包裹的命令。
-	pipe.Exec() //B
+	pipe.Exec(ctx) //B
 }
 
 //性能测试

@@ -1,9 +1,10 @@
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
+	"github.com/pkg/errors"
 	"math"
 	"redis-learn/core"
 	"strconv"
@@ -15,7 +16,8 @@ var redisCli *redis.Client
 
 //初始化连接
 func init() {
-	redisCli = core.InitRedis("127.0.0.1:6379", "", 0)
+	ctx := context.Background()
+	redisCli = core.InitRedis(ctx, "127.0.0.1:6379", "", 0)
 }
 
 var QUIT = false
@@ -36,6 +38,7 @@ const (
 //// <start id:="recent_log"/>
 //
 func log_recent(conn *redis.Client, name string, message string, severity string, pipe redis.Pipeliner) {
+	ctx := context.Background()
 	// 尝试将日志的级别转换成简单的字符串。
 	severity = INFO
 	// 创建负责存储消息的键。
@@ -47,11 +50,11 @@ func log_recent(conn *redis.Client, name string, message string, severity string
 		pipe = conn.Pipeline()
 	}
 	// 将消息添加到日志列表的最前面。
-	pipe.LPush(destination, message)
+	pipe.LPush(ctx, destination, message)
 	// 对日志列表进行修剪，让它只包含最新的100条消息。
-	pipe.LTrim(destination, 0, 99)
+	pipe.LTrim(ctx, destination, 0, 99)
 	// 执行两个命令。
-	pipe.Exec()
+	pipe.Exec(ctx)
 }
 
 // 代码清单 5-2
@@ -60,6 +63,7 @@ func log_recent(conn *redis.Client, name string, message string, severity string
 //redis会记录每种级别日志的最近一小时记录并每小时进行一次归档（将有序集合、记录最近记录所处的小时的键重命名 用于查找获取）
 //在添加普通日志时也会将日志添加到最新日志记录中
 func log_common(conn *redis.Client, name string, message string, severity string, timeout int64) {
+	ctx := context.Background()
 	timeout = 10
 	// 设置日志的级别。
 	severity = INFO
@@ -76,19 +80,19 @@ func log_common(conn *redis.Client, name string, message string, severity string
 			// 取得当前所处的小时数。
 			//hour_start := datetime(*now[:4]).isoformat()
 			hour_start := 10
-			existing, _ := tx.Get(start_key).Int()
+			existing, _ := tx.Get(ctx, start_key).Int()
 
-			_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
+			_, err := tx.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				// 如果目前的常见日志列表是上一个小时的……
 				if existing > 0 && existing < hour_start {
 					// ……那么将旧的常见日志信息进行归档。
-					pipe.Rename(destination, destination+":last")
-					pipe.Rename(start_key, destination+":pstart")
+					pipe.Rename(ctx, destination, destination+":last")
+					pipe.Rename(ctx, start_key, destination+":pstart")
 					// 更新当前所处的小时数。
-					pipe.Set(start_key, hour_start, 0)
+					pipe.Set(ctx, start_key, hour_start, 0)
 
 					// 对记录日志出现次数的计数器执行自增操作。
-					pipe.ZIncrBy(destination, 1, message)
+					pipe.ZIncrBy(ctx, destination, 1, message)
 					// log_recent()函数负责记录日志并调用execute()函数。
 					log_recent(conn, name, message, severity, pipe)
 				}
@@ -97,7 +101,7 @@ func log_common(conn *redis.Client, name string, message string, severity string
 			return err
 		}
 		//如果程序因为其他客户端在执行归档操作而出现监视错误，那么重试。
-		err := conn.Watch(txf, start_key)
+		err := conn.Watch(ctx, txf, start_key)
 		if err != redis.TxFailedErr {
 			fmt.Println("err:", err)
 			return
@@ -118,6 +122,7 @@ var PRECISION = []int64{1, 5, 60, 300, 3600, 18000, 86400} //A
 
 //按照不同的时间频率来更新计数器
 func update_counter(conn *redis.Client, name string, count int64, now int64) {
+	ctx := context.Background()
 	count = 1
 	// 通过取得当前时间来判断应该对哪个时间片执行自增操作。
 	now = time.Now().Unix()
@@ -131,11 +136,11 @@ func update_counter(conn *redis.Client, name string, count int64, now int64) {
 		hash := fmt.Sprintf("%v:%v", prec, name)
 		// 将计数器的引用信息添加到有序集合里面，
 		// 并将其分值设置为0，以便在之后执行清理操作。
-		pipe.ZAdd("known:", redis.Z{Member: hash})
+		pipe.ZAdd(ctx, "known:", &redis.Z{Member: hash})
 		// 对给定名字和精度的计数器进行更新。
-		pipe.HIncrBy("count:"+hash, strconv.Itoa(int(pnow)), count)
+		pipe.HIncrBy(ctx, "count:"+hash, strconv.Itoa(int(pnow)), count)
 	}
-	pipe.Exec()
+	pipe.Exec(ctx)
 }
 
 //
@@ -143,7 +148,7 @@ func get_counter(conn *redis.Client, name string, precision int) {
 	// 取得存储着计数器数据的键的名字。
 	//hash := fmt.Sprintf("%v:%v",precision, name)
 	// 从Redis里面取出计数器数据。
-	//data := conn.HGetAll("count:" + hash).Val()
+	//data := conn.HGetAll(ctx,"count:" + hash).Val()
 	// 将计数器数据转换成指定的格式。
 	//to_return := make([]int,0)
 	//for key, value :=range data	{
@@ -156,6 +161,7 @@ func get_counter(conn *redis.Client, name string, precision int) {
 
 //清除计数器
 func clean_counters(conn *redis.Client) {
+	ctx := context.Background()
 	// 为了平等地处理更新频率各不相同的多个计数器，程序需要记录清理操作执行的次数。
 	passes := 0
 	// 持续地对计数器进行清理，直到退出为止。
@@ -164,9 +170,9 @@ func clean_counters(conn *redis.Client) {
 		start := time.Now().Unix()
 		// 渐进地遍历所有已知的计数器。
 		var index int64 = 0
-		for index < conn.ZCard("known:").Val() {
+		for index < conn.ZCard(ctx, "known:").Val() {
 			// 取得被检查计数器的数据。
-			hash := conn.ZRange("known:", index, index).Val()
+			hash := conn.ZRange(ctx, "known:", index, index).Val()
 			index += 1
 			if len(hash) == 0 {
 				break
@@ -201,7 +207,7 @@ func clean_counters(conn *redis.Client) {
 
 			// 按需移除计数样本。
 			if remove > 0 {
-				conn.HDel(hkey, samples[remove])
+				conn.HDel(ctx, hkey, samples[remove])
 				// 这个散列可能已经被清空。
 				if remove == len(samples) {
 					// 在尝试修改计数器散列之前，对其进行监视。
@@ -210,11 +216,11 @@ func clean_counters(conn *redis.Client) {
 						// 那么从记录已知计数器的有序集合里面移除它。
 						// 计数器散列并不为空，
 						// 继续让它留在记录已有计数器的有序集合里面。
-						if tx.HLen(hkey).Val() == 0 {
+						if tx.HLen(ctx, hkey).Val() == 0 {
 							return errors.New("pipe.HLen(hkey).Val()==0")
 						}
-						_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
-							pipe.ZRem("known:", hash)
+						_, err := tx.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+							pipe.ZRem(ctx, "known:", hash)
 							// 在删除了一个计数器的情况下，
 							// 下次循环可以使用与本次循环相同的索引。
 							index -= 1
@@ -224,7 +230,7 @@ func clean_counters(conn *redis.Client) {
 					}
 					// 有其他程序向这个计算器散列添加了新的数据，
 					// 它已经不再是空的了，继续让它留在记录已知计数器的有序集合里面。
-					err := conn.Watch(txf, hkey)
+					err := conn.Watch(ctx, txf, hkey)
 					if err != redis.TxFailedErr {
 						fmt.Println("err:", err)
 						break
@@ -246,10 +252,11 @@ func clean_counters(conn *redis.Client) {
 
 // 代码清单 5-6
 //更新状态
-func update_stats(conn *redis.Client, context string, type_ string, value int64, timeout int64) float64 {
+func update_stats(conn *redis.Client, content string, type_ string, value int64, timeout int64) float64 {
+	ctx := context.Background()
 	timeout = 5
 	// 设置用于存储统计数据的键。
-	destination := fmt.Sprintf("stats:%v:%v", context, type_)
+	destination := fmt.Sprintf("stats:%v:%v", content, type_)
 	// 像common_log()函数一样，
 	// 处理当前这一个小时的数据和上一个小时的数据。
 	start_key := destination + ":start"
@@ -259,36 +266,36 @@ func update_stats(conn *redis.Client, context string, type_ string, value int64,
 		txf := func(tx *redis.Tx) error {
 			//now := time.Now().Unix()
 			hour_start := time.Now().Hour()
-			existing, _ := tx.Get(start_key).Int()
-			_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
+			existing, _ := tx.Get(ctx, start_key).Int()
+			_, err := tx.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				if existing > 0 && existing < hour_start {
-					pipe.Rename(destination, destination+":last")
-					pipe.Rename(start_key, destination+":pstart")
-					pipe.Set(start_key, hour_start, 0)
+					pipe.Rename(ctx, destination, destination+":last")
+					pipe.Rename(ctx, start_key, destination+":pstart")
+					pipe.Set(ctx, start_key, hour_start, 0)
 				}
 				tkey1 := core.GenID()
 				tkey2 := core.GenID()
 				// 将值添加到临时键里面。
-				pipe.ZAdd(tkey1, redis.Z{Score: float64(value), Member: "min"})
-				pipe.ZAdd(tkey2, redis.Z{Score: float64(value), Member: "max"})
+				pipe.ZAdd(ctx, tkey1, &redis.Z{Score: float64(value), Member: "min"})
+				pipe.ZAdd(ctx, tkey2, &redis.Z{Score: float64(value), Member: "max"})
 				// 使用合适聚合函数MIN和MAX，
 				// 对存储统计数据的键和两个临时键进行并集计算。
-				pipe.ZUnionStore(destination, redis.ZStore{Aggregate: "MIN"}, []string{destination, tkey1}...)
-				pipe.ZUnionStore(destination, redis.ZStore{Aggregate: "MAX"}, []string{destination, tkey2}...)
+				pipe.ZUnionStore(ctx, destination, &redis.ZStore{Aggregate: "MIN", Keys: []string{destination, tkey1}})
+				pipe.ZUnionStore(ctx, destination, &redis.ZStore{Aggregate: "MAX", Keys: []string{destination, tkey2}})
 
 				// 删除临时键。
-				pipe.Del(tkey1, tkey2)
+				pipe.Del(ctx, tkey1, tkey2)
 				// 对有序集合中的样本数量、值的和、值的平方之和三个成员进行更新。
-				retCmd = pipe.ZIncrBy(destination, 1, "count")
-				pipe.ZIncrBy(destination, float64(value), "sum")
-				pipe.ZIncrBy(destination, float64(value*value), "sumsq")
+				retCmd = pipe.ZIncrBy(ctx, destination, 1, "count")
+				pipe.ZIncrBy(ctx, destination, float64(value), "sum")
+				pipe.ZIncrBy(ctx, destination, float64(value*value), "sumsq")
 
 				// 返回基本的计数信息，以便函数调用者在有需要时做进一步的处理。
 				return nil
 			})
 			return err
 		}
-		err := conn.Watch(txf, start_key)
+		err := conn.Watch(ctx, txf, start_key)
 		if err != redis.TxFailedErr {
 			fmt.Println("err:", err)
 			return 0
@@ -326,7 +333,8 @@ func get_stats(conn *redis.Client, context string, type_ string) map[string]int 
 // 代码清单 5-8
 // <start id:="access_time_context_manager"/>
 // 将这个Python生成器用作上下文管理器。
-func access_time(conn *redis.Client, context string) {
+func access_time(conn *redis.Client, content string) {
+	ctx := context.Background()
 	// 记录代码块执行前的时间。
 	start := time.Now().Unix()
 	// 运行被包裹的代码块。
@@ -335,17 +343,17 @@ func access_time(conn *redis.Client, context string) {
 	delta := time.Now().Unix() - start
 	// 更新这一上下文的统计数据。
 	//stats := update_stats(conn, context, "AccessTime", delta,0)
-	_ = update_stats(conn, context, "AccessTime", delta, 0)
+	_ = update_stats(conn, content, "AccessTime", delta, 0)
 	// 计算页面的平均访问时长。
 	//average := stats[1] / stats[0]
 	var average float64 = 0
 
 	pipe := conn.Pipeline()
 	// 将页面的平均访问时长添加到记录最慢访问时间的有序集合里面。
-	pipe.ZAdd("slowest:AccessTime", redis.Z{Score: average, Member: context})
+	pipe.ZAdd(ctx, "slowest:AccessTime", &redis.Z{Score: average, Member: content})
 	// AccessTime有序集合只会保留最慢的100条记录。
-	pipe.ZRemRangeByRank("slowest:AccessTime", 0, -101)
-	pipe.Exec()
+	pipe.ZRemRangeByRank(ctx, "slowest:AccessTime", 0, -101)
+	pipe.Exec(ctx)
 }
 
 // <start id:="access_time_use"/>
@@ -441,6 +449,7 @@ var IS_UNDER_MAINTENANCE = false
 
 //判断是否在维护状态
 func is_under_maintenance(conn *redis.Client) bool {
+	ctx := context.Background()
 	// 将两个变量设置为全局变量以便在之后对它们进行写入。
 	// 距离上次检查是否已经超过1秒钟？
 	if LAST_CHECKED < time.Now().Unix()-1 {
@@ -449,7 +458,7 @@ func is_under_maintenance(conn *redis.Client) bool {
 		LAST_CHECKED = time.Now().Unix() //C
 	}
 	// 检查系统是否正在进行维护。
-	ret, _ := conn.Get("is-under-maintenance").Int()
+	ret, _ := conn.Get(ctx, "is-under-maintenance").Int()
 	//IS_UNDER_MAINTENANCE = 	ret>0   //D
 
 	// 返回一个布尔值，用于表示系统是否正在进行维护。
@@ -460,8 +469,9 @@ func is_under_maintenance(conn *redis.Client) bool {
 // <start id:="set_config"/>
 //设置配置
 func set_config(conn *redis.Client, type_ string, component string, config string) {
+	ctx := context.Background()
 	//conn.Set(fmt.Sprintf("config:%v:%v",type_, component),"" json.dumps(config))
-	conn.Set(fmt.Sprintf("config:%v:%v", type_, component), "", 0)
+	conn.Set(ctx, fmt.Sprintf("config:%v:%v", type_, component), "", 0)
 }
 
 // 代码清单 5-15
@@ -545,5 +555,6 @@ func get_config(conn *redis.Client, type_ string, component string, wait int) {
 //'''
 
 func main() {
-	core.ClearAllKeys(redisCli)
+	ctx := context.Background()
+	core.ClearAllKeys(ctx, redisCli)
 }

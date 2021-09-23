@@ -1,10 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"github.com/go-redis/redis"
+	"github.com/go-redis/redis/v8"
+	"github.com/pkg/errors"
 	"math"
 	"redis-learn/core"
 	"strconv"
@@ -16,33 +17,37 @@ var redisCli *redis.Client
 
 //初始化连接
 func init() {
-	redisCli = core.InitRedis("127.0.0.1:6379", "", 0)
+	ctx := context.Background()
+	redisCli = core.InitRedis(ctx, "127.0.0.1:6379", "", 0)
 }
 
 //将联系人添加到用户的最近联系人列表中
 func add_update_contact(conn *redis.Client, user string, contact string) {
+	ctx := context.Background()
 	ac_list := "recent:" + user
 	// 准备执行原子操作。
 	pipeline := conn.Pipeline()
 	// 如果联系人已经存在，那么移除他。
-	pipeline.LRem(ac_list, 1, contact)
+	pipeline.LRem(ctx, ac_list, 1, contact)
 	// 将联系人推入到列表的最前端。
-	pipeline.LPush(ac_list, contact)
+	pipeline.LPush(ctx, ac_list, contact)
 	// 只保留列表里面的前100个联系人。
-	pipeline.LTrim(ac_list, 0, 99)
+	pipeline.LTrim(ctx, ac_list, 0, 99)
 	// 实际地执行以上操作。
-	pipeline.Exec()
+	pipeline.Exec(ctx)
 }
 
 //将联系人从用户的最近联系人列表中删除
 func remove_contact(conn *redis.Client, user string, contact string) {
-	conn.LRem("recent:"+user, 1, contact)
+	ctx := context.Background()
+	conn.LRem(ctx, "recent:"+user, 1, contact)
 }
 
 //返回带有前缀的联系人
 func fetch_autocomplete_list(conn *redis.Client, user string, prefix string) []string {
+	ctx := context.Background()
 	// 获取自动补完列表。
-	candidates := conn.LRange("recent:"+user, 0, -1).Val()
+	candidates := conn.LRange(ctx, "recent:"+user, 0, -1).Val()
 	matches := make([]string, 0)
 	// 检查每个候选联系人。
 	for _, v := range candidates {
@@ -75,6 +80,7 @@ func find_prefix_range(prefix string) (string, string) {
 
 //使用redis进行自动补全 添加标识的起始和结尾点 用于在有序集合中获取到前缀匹配的区间范围
 func autocomplete_on_prefix(conn *redis.Client, guild string, prefix string) []string {
+	ctx := context.Background()
 	// 根据给定的前缀计算出查找范围的起点和终点。
 	start, end := find_prefix_range(prefix)
 	identifier := core.GenID()
@@ -83,25 +89,25 @@ func autocomplete_on_prefix(conn *redis.Client, guild string, prefix string) []s
 	zset_name := "members:" + guild
 
 	// 将范围的起始元素和结束元素添加到有序集合里面。
-	conn.ZAdd(zset_name, redis.Z{Score: 0, Member: start}, redis.Z{Score: 0, Member: end})
+	conn.ZAdd(ctx, zset_name, &redis.Z{Score: 0, Member: start}, &redis.Z{Score: 0, Member: end})
 	var cmd *redis.StringSliceCmd
 	var items []string
 	for {
 		txf := func(tx *redis.Tx) error {
 			// 找到两个被插入元素在有序集合中的排名。
-			sindex := tx.ZRank(zset_name, start).Val()
-			eindex := tx.ZRank(zset_name, end).Val()
+			sindex := tx.ZRank(ctx, zset_name, start).Val()
+			eindex := tx.ZRank(ctx, zset_name, end).Val()
 			erange := math.Min(float64(sindex+9), float64(eindex-2))
-			_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
+			_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				// 获取范围内的值，然后删除之前插入的起始元素和结束元素。
-				pipe.ZRem(zset_name, start, end)
-				cmd = pipe.ZRange(zset_name, sindex, int64(erange))
+				pipe.ZRem(ctx, zset_name, start, end)
+				cmd = pipe.ZRange(ctx, zset_name, sindex, int64(erange))
 				return nil
 			})
 			return err
 		}
 
-		err := conn.Watch(txf, zset_name)
+		err := conn.Watch(ctx, txf, zset_name)
 		// 如果自动补完有序集合已经被其他客户端修改过了，那么进行重试。
 		if err != redis.TxFailedErr {
 			fmt.Print("err != redis.TxFailedErr err:", err)
@@ -122,32 +128,35 @@ func autocomplete_on_prefix(conn *redis.Client, guild string, prefix string) []s
 
 //加入工会
 func join_guild(conn *redis.Client, guild string, user string) {
-	conn.ZAdd("members:"+guild, redis.Z{Score: 0, Member: user})
+	ctx := context.Background()
+	conn.ZAdd(ctx, "members:"+guild, &redis.Z{Score: 0, Member: user})
 }
 
 //离开工会
 func leave_guild(conn *redis.Client, guild string, user string) {
-	conn.ZRem("members:"+guild, user)
+	ctx := context.Background()
+	conn.ZRem(ctx, "members:"+guild, user)
 }
 
 //使用watch事务来包裹交易确保数据的一致性
 func list_item(conn *redis.Client, itemid string, sellerid int, price float64) error {
+	ctx := context.Background()
 	//...
 	var inv = ""
 	var item = ""
 	// 监视卖家包裹发生的变动。
 	txf := func(tx *redis.Tx) error {
-		if !tx.SIsMember(inv, itemid).Val() {
+		if !tx.SIsMember(ctx, inv, itemid).Val() {
 			return errors.New("itemid is not member of inv")
 		}
-		_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
-			pipe.ZAdd("market:", redis.Z{Score: price, Member: item})
-			pipe.SRem(inv, itemid)
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.ZAdd(ctx, "market:", &redis.Z{Score: price, Member: item})
+			pipe.SRem(ctx, inv, itemid)
 			return nil
 		})
 		return err
 	}
-	err := conn.Watch(txf, inv)
+	err := conn.Watch(ctx, txf, inv)
 	if err != redis.TxFailedErr {
 		return err
 	}
@@ -156,6 +165,7 @@ func list_item(conn *redis.Client, itemid string, sellerid int, price float64) e
 
 //购买商品
 func purchase_item(conn *redis.Client, buyerid string, itemid int, sellerid int, lprice int64) bool {
+	ctx := context.Background()
 	//...
 	var seller = ""
 	var buyer = ""
@@ -163,25 +173,25 @@ func purchase_item(conn *redis.Client, buyerid string, itemid int, sellerid int,
 	var inventory = ""
 
 	txf := func(tx *redis.Tx) error {
-		price := int64(tx.ZScore("market:", item).Val())
-		funds, _ := strconv.ParseInt(tx.HGet(buyer, "funds").Val(), 64, 10)
+		price := int64(tx.ZScore(ctx, "market:", item).Val())
+		funds, _ := strconv.ParseInt(tx.HGet(ctx, buyer, "funds").Val(), 64, 10)
 		// 检查物品是否已经售出、物品的价格是否已经发生了变化，
 		// 以及买家是否有足够的金钱来购买这件物品。
 		if price != lprice || price > funds {
 			return errors.New("price != lprice ||price > funds")
 		}
-		_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			// 将买家支付的货款转移给卖家，并将被卖出的物品转移给买家。
-			pipe.HIncrBy(seller, "funds", price)
-			pipe.HIncrBy(buyerid, "funds", -price)
-			pipe.SAdd(inventory, itemid)
-			pipe.ZRem("market:", item)
+			pipe.HIncrBy(ctx, seller, "funds", price)
+			pipe.HIncrBy(ctx, buyerid, "funds", -price)
+			pipe.SAdd(ctx, inventory, itemid)
+			pipe.ZRem(ctx, "market:", item)
 			return nil
 		})
 		return err
 	}
 	// 监视市场以及买家个人信息发生的变化。
-	err := conn.Watch(txf, buyer)
+	err := conn.Watch(ctx, txf, buyer)
 	if err != redis.TxFailedErr {
 		fmt.Println("err:", err)
 		return false
@@ -191,6 +201,7 @@ func purchase_item(conn *redis.Client, buyerid string, itemid int, sellerid int,
 
 //获取分布式锁
 func acquire_lock(conn *redis.Client, lockname string, acquire_timeout int64) string {
+	ctx := context.Background()
 	if acquire_timeout < 10 {
 		acquire_timeout = 10
 	}
@@ -199,7 +210,7 @@ func acquire_lock(conn *redis.Client, lockname string, acquire_timeout int64) st
 	end := time.Now().Unix() + acquire_timeout
 	for time.Now().Unix() < end {
 		// 尝试取得锁。
-		if conn.SetNX("lock:"+lockname, identifier, 0).Val() {
+		if conn.SetNX(ctx, "lock:"+lockname, identifier, 0).Val() {
 			return identifier
 		}
 		time.Sleep(time.Microsecond)
@@ -209,6 +220,7 @@ func acquire_lock(conn *redis.Client, lockname string, acquire_timeout int64) st
 
 //使用锁来进行商品交易
 func purchase_item_with_lock(conn *redis.Client, buyerid string, itemid string, sellerid string) bool {
+	ctx := context.Background()
 	buyer := "users:" + buyerid
 	seller := "users:" + sellerid
 	item := itemid + sellerid
@@ -223,9 +235,9 @@ func purchase_item_with_lock(conn *redis.Client, buyerid string, itemid string, 
 
 	pipe := conn.Pipeline()
 	// 检查物品是否已经售出，以及买家是否有足够的金钱来购买物品。
-	priceCmd := pipe.ZScore("market:", item)
-	fundsCmd := pipe.HGet(buyer, "funds")
-	pipe.Exec()
+	priceCmd := pipe.ZScore(ctx, "market:", item)
+	fundsCmd := pipe.HGet(ctx, buyer, "funds")
+	pipe.Exec(ctx)
 	price := int64(priceCmd.Val())
 	funds, _ := fundsCmd.Int64()
 	if price == 0 || price > funds {
@@ -233,34 +245,35 @@ func purchase_item_with_lock(conn *redis.Client, buyerid string, itemid string, 
 	}
 
 	// 将买家支付的货款转移给卖家，并将售出的物品转移给买家。
-	pipe.HIncrBy(seller, "funds", price)
-	pipe.HIncrBy(buyer, "funds", -price)
-	pipe.SAdd(inventory, itemid)
-	pipe.ZRem("market:", item)
-	pipe.Exec()
+	pipe.HIncrBy(ctx, seller, "funds", price)
+	pipe.HIncrBy(ctx, buyer, "funds", -price)
+	pipe.SAdd(ctx, inventory, itemid)
+	pipe.ZRem(ctx, "market:", item)
+	pipe.Exec(ctx)
 	return true
 }
 
 //释放锁
 func release_lock(conn *redis.Client, lockname string, identifier string) bool {
+	ctx := context.Background()
 	lockname = "lock:" + lockname
 	for {
 		// 检查并确认进程还持有着锁。
 		txf := func(tx *redis.Tx) error {
-			if tx.Get(lockname).Val() == identifier {
-				_, err := tx.Pipelined(func(pipe redis.Pipeliner) error {
-					pipe.Del(lockname)
+			if tx.Get(ctx, lockname).Val() == identifier {
+				_, err := tx.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+					pipe.Del(ctx, lockname)
 					return nil
 				})
 				return err
 			} else {
 				// 进程已经失去了锁。
-				return errors.New("tx.Get(lockname) !=identifier")
+				return errors.New("tx.Get(ctx,lockname) !=identifier")
 			}
 		}
-		err := conn.Watch(txf, lockname)
+		err := conn.Watch(ctx, txf, lockname)
 		//watch值改变
-		if err == redis.TxFailedErr {
+		if errors.Is(err, redis.TxFailedErr) {
 			continue
 			//成功
 		} else if err == nil {
@@ -275,6 +288,7 @@ func release_lock(conn *redis.Client, lockname string, identifier string) bool {
 
 //带过期时间的分布式锁
 func acquire_lock_with_timeout(conn *redis.Client, lockname string, acquire_timeout int64, lock_timeout time.Duration) string {
+	ctx := context.Background()
 	acquire_timeout = 10
 	lock_timeout = 10
 	// 128位随机标识符。
@@ -286,11 +300,11 @@ func acquire_lock_with_timeout(conn *redis.Client, lockname string, acquire_time
 	end := time.Now().Unix() + acquire_timeout
 	for time.Now().Unix() < end {
 		// 获取锁并设置过期时间。
-		if conn.SetNX(lockname, identifier, lock_timeout*time.Second).Val() {
+		if conn.SetNX(ctx, lockname, identifier, lock_timeout*time.Second).Val() {
 			return identifier
 			// 检查过期时间，并在有需要时对其进行更新。 -1代表没有设置过期时间
-		} else if conn.TTL(lockname).Val() == -1 {
-			conn.Expire(lockname, lock_timeout*time.Second)
+		} else if conn.TTL(ctx, lockname).Val() == -1 {
+			conn.Expire(ctx, lockname, lock_timeout*time.Second)
 		}
 		time.Sleep(time.Microsecond)
 	}
@@ -299,6 +313,7 @@ func acquire_lock_with_timeout(conn *redis.Client, lockname string, acquire_time
 
 //将时间戳作为分数的有序集合 对于不过期的一定优先排名的将获取到信号量 对于时钟不一致的多个分布式机器是不公平的抢夺信号量
 func acquire_semaphore(conn *redis.Client, semname string, limit int64, timeout int64) string {
+	ctx := context.Background()
 	timeout = 10
 	// 128位随机标识符。
 	identifier := core.GenID()
@@ -306,29 +321,31 @@ func acquire_semaphore(conn *redis.Client, semname string, limit int64, timeout 
 
 	pipeline := conn.Pipeline()
 	// 清理过期的信号量持有者。
-	pipeline.ZRemRangeByScore(semname, "-inf", strconv.Itoa(int(now-timeout)))
+	pipeline.ZRemRangeByScore(ctx, semname, "-inf", strconv.Itoa(int(now-timeout)))
 	// 尝试获取信号量。
-	pipeline.ZAdd(semname, redis.Z{Score: float64(now), Member: identifier})
+	pipeline.ZAdd(ctx, semname, &redis.Z{Score: float64(now), Member: identifier})
 	// 检查是否成功取得了信号量。
-	limitCmd := pipeline.ZRank(semname, identifier)
-	pipeline.Exec()
+	limitCmd := pipeline.ZRank(ctx, semname, identifier)
+	pipeline.Exec(ctx)
 	if limitCmd.Val() < limit {
 		return identifier
 	}
 	// 获取信号量失败，删除之前添加的标识符。
-	conn.ZRem(semname, identifier)
+	conn.ZRem(ctx, semname, identifier)
 	return ""
 }
 
 //释放信号量
 func release_semaphore(conn *redis.Client, semname string, identifier string) int64 {
+	ctx := context.Background()
 	// 如果信号量已经被正确地释放，那么返回True；
 	// 返回False则表示该信号量已经因为过期而被删除了。
-	return conn.ZRem(semname, identifier).Val()
+	return conn.ZRem(ctx, semname, identifier).Val()
 }
 
 //公平的获取信号量 使用自增值作为评判依据 允许个机器的时钟存在一定的偏差
 func acquire_fair_semaphore(conn *redis.Client, semname string, limit int64, timeout int64) string {
+	ctx := context.Background()
 	timeout = 10
 	// 128位随机标识符。
 	identifier := core.GenID()
@@ -338,35 +355,36 @@ func acquire_fair_semaphore(conn *redis.Client, semname string, limit int64, tim
 	now := time.Now().Unix()
 	pipeline := conn.Pipeline()
 	// 删除超时的信号量。
-	pipeline.ZRemRangeByScore(semname, "-inf", strconv.Itoa(int(now-timeout)))
-	pipeline.ZInterStore(czset, redis.ZStore{Weights: []float64{1, 0}}, []string{czset, semname}...)
+	pipeline.ZRemRangeByScore(ctx, semname, "-inf", strconv.Itoa(int(now-timeout)))
+	pipeline.ZInterStore(ctx, czset, &redis.ZStore{Weights: []float64{1, 0}, Keys: []string{czset, semname}})
 
 	// 对计数器执行自增操作，并获取操作执行之后的值。
-	counterCmd := pipeline.Incr(ctr)
+	counterCmd := pipeline.Incr(ctx, ctr)
 	counter := counterCmd.Val()
 
 	// 尝试获取信号量。
-	pipeline.ZAdd(semname, redis.Z{Score: float64(now), Member: identifier})
-	pipeline.ZAdd(czset, redis.Z{Score: float64(counter), Member: identifier})
+	pipeline.ZAdd(ctx, semname, &redis.Z{Score: float64(now), Member: identifier})
+	pipeline.ZAdd(ctx, czset, &redis.Z{Score: float64(counter), Member: identifier})
 
 	// 通过检查排名来判断客户端是否取得了信号量。
-	pipeline.ZRank(czset, identifier)
+	pipeline.ZRank(ctx, czset, identifier)
 	if counter < limit {
 		// 客户端成功取得了信号量。
 		return identifier
 	}
 	// 客户端未能取得信号量，清理无用数据。
-	pipeline.ZRem(semname, identifier)
-	pipeline.ZRem(czset, identifier)
-	pipeline.Exec()
+	pipeline.ZRem(ctx, semname, identifier)
+	pipeline.ZRem(ctx, czset, identifier)
+	pipeline.Exec(ctx)
 	return ""
 }
 
 //释放公平的信号量
 func release_fair_semaphore(conn *redis.Client, semname string, identifier string) int64 {
+	ctx := context.Background()
 	pipeline := conn.Pipeline()
-	retCmd := pipeline.ZRem(semname, identifier)
-	pipeline.ZRem(semname+":owner", identifier)
+	retCmd := pipeline.ZRem(ctx, semname, identifier)
+	pipeline.ZRem(ctx, semname+":owner", identifier)
 	// 返回True表示信号量已被正确地释放，
 	// 返回False则表示想要释放的信号量已经因为超时而被删除了。
 	return retCmd.Val()
@@ -374,8 +392,9 @@ func release_fair_semaphore(conn *redis.Client, semname string, identifier strin
 
 //更新信号量的持有时间（续命） ZADD操作会刷新已经存在的值
 func refresh_fair_semaphore(conn *redis.Client, semname string, identifier string) bool {
+	ctx := context.Background()
 	// 更新客户端持有的信号量。
-	if conn.ZAdd(semname, redis.Z{Score: float64(time.Now().Unix()), Member: identifier}).Val() > 0 {
+	if conn.ZAdd(ctx, semname, &redis.Z{Score: float64(time.Now().Unix()), Member: identifier}).Val() > 0 {
 		// 告知调用者，客户端已经失去了信号量。
 		release_fair_semaphore(conn, semname, identifier)
 		return false
@@ -396,6 +415,7 @@ func acquire_semaphore_with_lock(conn *redis.Client, semname string, limit int64
 
 //将邮件序列化之后推入队列中
 func send_sold_email_via_queue(conn *redis.Client, seller string, item string, price int, buyer string) {
+	ctx := context.Background()
 	// 准备好待发送邮件。
 	data := map[string]interface{}{
 		"seller_id": seller,
@@ -406,16 +426,17 @@ func send_sold_email_via_queue(conn *redis.Client, seller string, item string, p
 	}
 	// 将待发送邮件推入到队列里面。
 	bytes, _ := json.Marshal(data)
-	conn.RPush("queue:email", string(bytes))
+	conn.RPush(ctx, "queue:email", string(bytes))
 }
 
 var QUIT bool
 
 //
 func process_sold_email_queue(conn *redis.Client) {
+	ctx := context.Background()
 	for !QUIT {
 		// 尝试获取一封待发送邮件。
-		packed := conn.BLPop(30*time.Second, "queue:email").Val()
+		packed := conn.BLPop(ctx, 30*time.Second, "queue:email").Val()
 		// 队列里面暂时还没有待发送邮件，重试。
 		if packed == nil || len(packed) == 0 {
 			continue
@@ -434,9 +455,10 @@ func process_sold_email_queue(conn *redis.Client) {
 
 //阻塞弹出任务进行执行	根据任务名进行对应函数的反射调用
 func worker_watch_queue(conn *redis.Client, queue string, callbacks map[string]func([]string)) {
+	ctx := context.Background()
 	for !QUIT {
 		// 尝试从队列里面取出一项待执行任务。
-		packed := conn.BLPop(30*time.Second, queue).Val()
+		packed := conn.BLPop(ctx, 30*time.Second, queue).Val()
 		// 队列为空，没有任务需要执行；重试。
 		if packed == nil || len(packed) == 0 {
 			continue
@@ -457,9 +479,10 @@ func worker_watch_queue(conn *redis.Client, queue string, callbacks map[string]f
 
 //go-redis的客户端API中BLPop支持对多个列表进行取值操作
 func worker_watch_queues(conn *redis.Client, queues []string, callbacks map[string]func([]string)) { // 实现优先级特性要修改的第一行代码。
+	ctx := context.Background()
 	for !QUIT {
 		// 尝试从队列里面取出一项待执行任务。
-		packed := conn.BLPop(30*time.Second, queues...).Val() // 实现优先级特性要修改的第二行代码。
+		packed := conn.BLPop(ctx, 30*time.Second, queues...).Val() // 实现优先级特性要修改的第二行代码。
 		// 队列为空，没有任务需要执行；重试。
 		if packed == nil || len(packed) == 0 {
 			continue
@@ -480,6 +503,7 @@ func worker_watch_queues(conn *redis.Client, queues []string, callbacks map[stri
 
 //延迟队列 如果任务带有延迟属性则将任务添加到延迟队列中（一个以时间戳为分数的有序集合）
 func execute_later(conn *redis.Client, queue string, name string, args string, delay int64) string {
+	ctx := context.Background()
 	delay = 0
 	// 创建唯一标识符。
 	identifier := core.GenID()
@@ -494,10 +518,10 @@ func execute_later(conn *redis.Client, queue string, name string, args string, d
 	item := string(bytes)
 	if delay > 0 {
 		// 延迟执行这个任务。
-		conn.ZAdd("delayed:", redis.Z{Score: float64(time.Now().Unix() + delay), Member: item})
+		conn.ZAdd(ctx, "delayed:", &redis.Z{Score: float64(time.Now().Unix() + delay), Member: item})
 	} else {
 		// 立即执行这个任务。
-		conn.RPush("queue:"+queue, item)
+		conn.RPush(ctx, "queue:"+queue, item)
 	}
 	// 返回标识符。
 	return identifier
@@ -505,9 +529,10 @@ func execute_later(conn *redis.Client, queue string, name string, args string, d
 
 //将不同优先级的任务分发到不同的队列以实现优先队列 分发包含的队列名集合和获取传递的队列名集合需要一致
 func poll_queue(conn *redis.Client) {
+	ctx := context.Background()
 	for !QUIT {
 		// 获取队列中的第一个任务。
-		item := conn.ZRangeWithScores("delayed:", 0, 0).Val()
+		item := conn.ZRangeWithScores(ctx, "delayed:", 0, 0).Val()
 		// 队列没有包含任何任务，或者任务的执行时间未到。
 		if item == nil || len(item) == 0 || item[0].Score > float64(time.Now().Unix()) {
 			time.Sleep(time.Microsecond)
@@ -527,8 +552,8 @@ func poll_queue(conn *redis.Client) {
 		}
 
 		// 将任务推入到适当的任务队列里面。
-		if conn.ZRem("delayed:", item1).Val() > 0 {
-			conn.RPush("queue:"+queue, item1)
+		if conn.ZRem(ctx, "delayed:", item1).Val() > 0 {
+			conn.RPush(ctx, "queue:"+queue, item1)
 		}
 		// 释放锁。
 		release_lock(conn, identifier, locked)
@@ -537,26 +562,27 @@ func poll_queue(conn *redis.Client) {
 
 //将所有参与的人拉到一个有序集合中 并初始化已读信息的有序集合（分数代表当前已读）
 func create_chat(conn *redis.Client, sender string, recipients []string, message string, chat_id string) string {
+	ctx := context.Background()
 	chat_id = ""
 	// 获得新的群组ID。
 	if chat_id == "" {
-		chat_id = strconv.Itoa(int(conn.Incr("ids:chat:").Val()))
+		chat_id = strconv.Itoa(int(conn.Incr(ctx, "ids:chat:").Val()))
 	}
 	// 创建一个由用户和分值组成的字典，字典里面的信息将被添加到有序集合里面。
 	recipients = append(recipients, sender)
-	recipientsd := make([]redis.Z, len(recipients))
+	recipientsd := make([]*redis.Z, len(recipients))
 	for i, v := range recipients {
-		recipientsd[i] = redis.Z{Member: v}
+		recipientsd[i] = &redis.Z{Member: v}
 	}
 
 	pipeline := conn.Pipeline()
 	// 将所有参与群聊的用户添加到有序集合里面。
-	pipeline.ZAdd("chat:"+chat_id, recipientsd...)
+	pipeline.ZAdd(ctx, "chat:"+chat_id, recipientsd...)
 	// 初始化已读有序集合。
 	for _, rec := range recipients {
-		pipeline.ZAdd("seen:"+rec, redis.Z{Score: 0, Member: chat_id})
+		pipeline.ZAdd(ctx, "seen:"+rec, &redis.Z{Score: 0, Member: chat_id})
 	}
-	pipeline.Exec()
+	pipeline.Exec(ctx)
 
 	// 发送消息。
 	return send_message(conn, chat_id, sender, message)
@@ -564,6 +590,7 @@ func create_chat(conn *redis.Client, sender string, recipients []string, message
 
 //发送消息
 func send_message(conn *redis.Client, chat_id string, sender string, message string) string {
+	ctx := context.Background()
 	identifier := acquire_lock(conn, "chat:"+chat_id, 0)
 	if identifier == "" {
 		fmt.Println("Couldn't get the lock")
@@ -571,7 +598,7 @@ func send_message(conn *redis.Client, chat_id string, sender string, message str
 	}
 
 	// 筹备待发送的消息。
-	mid := conn.Incr("ids:" + chat_id).Val()
+	mid := conn.Incr(ctx, "ids:"+chat_id).Val()
 	ts := time.Now().Unix()
 	packed, _ := json.Marshal(map[string]interface{}{
 		"id":      mid,
@@ -581,7 +608,7 @@ func send_message(conn *redis.Client, chat_id string, sender string, message str
 	})
 
 	// 将消息发送至群组。
-	conn.ZAdd("msgs:"+chat_id, redis.Z{Score: float64(mid), Member: packed})
+	conn.ZAdd(ctx, "msgs:"+chat_id, &redis.Z{Score: float64(mid), Member: packed})
 	release_lock(conn, "chat:"+chat_id, identifier)
 	return chat_id
 }
@@ -594,8 +621,9 @@ type ChatInfo struct {
 
 //获取最新的消息
 func fetch_pending_messages(conn *redis.Client, recipient string) []ChatInfo {
+	ctx := context.Background()
 	// 获取最后接收到的消息的ID。
-	seen := conn.ZRangeWithScores("seen:"+recipient, 0, -1).Val()
+	seen := conn.ZRangeWithScores(ctx, "seen:"+recipient, 0, -1).Val()
 
 	pipeline := conn.Pipeline()
 
@@ -603,10 +631,10 @@ func fetch_pending_messages(conn *redis.Client, recipient string) []ChatInfo {
 	cmds := make([]*redis.StringSliceCmd, len(seen))
 	for i, v := range seen {
 		chat_id, seen_id := v.Member.(string), v.Score
-		cmds[i] = pipeline.ZRangeByScore("msgs:"+chat_id, redis.ZRangeBy{Min: strconv.Itoa(int(seen_id + 1)), Max: "inf"})
+		cmds[i] = pipeline.ZRangeByScore(ctx, "msgs:"+chat_id, &redis.ZRangeBy{Min: strconv.Itoa(int(seen_id + 1)), Max: "inf"})
 	}
 	// 这些数据将被返回给函数调用者。
-	//chat_info := zip(seen, pipeline.Exec())
+	//chat_info := zip(seen, pipeline.Exec(ctx))
 	//chat_info := zip(seen, cmds[i].Val())
 	chat_info := []ChatInfo{}
 
@@ -619,55 +647,57 @@ func fetch_pending_messages(conn *redis.Client, recipient string) []ChatInfo {
 		//messages[:] := map(json.loads,	messages)
 		// 使用最新收到的消息来更新群组有序集合。
 		seen_id := messages[len(messages)-1]["id"].(float64)
-		conn.ZAdd("chat:"+chat_id, redis.Z{Score: seen_id, Member: recipient})
+		conn.ZAdd(ctx, "chat:"+chat_id, &redis.Z{Score: seen_id, Member: recipient})
 
 		// 找出那些所有人都已经阅读过的消息。
-		min_id := conn.ZRangeWithScores("chat:"+chat_id, 0, 0).Val()
+		min_id := conn.ZRangeWithScores(ctx, "chat:"+chat_id, 0, 0).Val()
 
 		// 更新已读消息有序集合。
-		pipeline.ZAdd("seen:"+recipient, redis.Z{Score: seen_id, Member: chat_id})
+		pipeline.ZAdd(ctx, "seen:"+recipient, &redis.Z{Score: seen_id, Member: chat_id})
 		if min_id == nil || len(min_id) == 0 {
 			// 清除那些已经被所有人阅读过的消息。
-			pipeline.ZRemRangeByScore("msgs:"+chat_id, "0", strconv.Itoa(int(min_id[0].Score)))
+			pipeline.ZRemRangeByScore(ctx, "msgs:"+chat_id, "0", strconv.Itoa(int(min_id[0].Score)))
 		}
 		//chat_info[i] = (chat_id, messages)
 	}
-	pipeline.Exec()
+	pipeline.Exec(ctx)
 	return chat_info
 }
 
 //加入聊天
 func join_chat(conn *redis.Client, chat_id string, user string) {
+	ctx := context.Background()
 	// 取得最新群组消息的ID。
-	message_id, _ := strconv.ParseFloat(conn.Get("ids:"+chat_id).Val(), 10)
+	message_id, _ := strconv.ParseFloat(conn.Get(ctx, "ids:"+chat_id).Val(), 10)
 
 	pipeline := conn.Pipeline()
 	// 将用户添加到群组成员列表里面。
-	pipeline.ZAdd("chat:"+chat_id, redis.Z{Score: message_id, Member: user})
+	pipeline.ZAdd(ctx, "chat:"+chat_id, &redis.Z{Score: message_id, Member: user})
 	// 将群组添加到用户的已读列表里面。
-	pipeline.ZAdd("seen:"+user, redis.Z{Score: message_id, Member: chat_id})
-	pipeline.Exec()
+	pipeline.ZAdd(ctx, "seen:"+user, &redis.Z{Score: message_id, Member: chat_id})
+	pipeline.Exec(ctx)
 }
 
 //离开群组 有序集合chat:chat_id 分数为最小已阅读的消息No 所有从0-No的消息时可以删除的
 func leave_chat(conn *redis.Client, chat_id string, user string) {
+	ctx := context.Background()
 	pipeline := conn.Pipeline()
 	// 从群组里面移除给定的用户。
-	pipeline.ZRem("chat:"+chat_id, user)
-	pipeline.ZRem("seen:"+user, chat_id)
+	pipeline.ZRem(ctx, "chat:"+chat_id, user)
+	pipeline.ZRem(ctx, "seen:"+user, chat_id)
 	// 查看群组剩余成员的数量。
-	zCmd := pipeline.ZCard("chat:" + chat_id)
-	pipeline.Exec()
+	zCmd := pipeline.ZCard(ctx, "chat:"+chat_id)
+	pipeline.Exec(ctx)
 	if zCmd.Val() <= 0 {
 		// 删除群组。
-		pipeline.Del("msgs:" + chat_id)
-		pipeline.Del("ids:" + chat_id)
-		pipeline.Exec()
+		pipeline.Del(ctx, "msgs:"+chat_id)
+		pipeline.Del(ctx, "ids:"+chat_id)
+		pipeline.Exec(ctx)
 	} else {
 		// 查找那些已经被所有成员阅读过的消息。
-		oldest := conn.ZRangeWithScores("chat:"+chat_id, 0, 0).Val()
+		oldest := conn.ZRangeWithScores(ctx, "chat:"+chat_id, 0, 0).Val()
 		// 删除那些已经被所有成员阅读过的消息。
-		conn.ZRemRangeByScore("msgs:"+chat_id, "0", strconv.Itoa(int(oldest[0].Score)))
+		conn.ZRemRangeByScore(ctx, "msgs:"+chat_id, "0", strconv.Itoa(int(oldest[0].Score)))
 	}
 }
 
@@ -675,6 +705,7 @@ var aggregates map[string]map[string]int
 
 //本地聚合计算回调函数，用于每天以国家维度对日志行进行聚合（一天执行一次 process_logs_from_redis 函数中的参数）
 func daily_country_aggregate(conn *redis.Client, line string) {
+	ctx := context.Background()
 	if line != "" {
 		line := strings.Split(line, "|")
 		// 提取日志行中的信息。
@@ -692,7 +723,7 @@ func daily_country_aggregate(conn *redis.Client, line string) {
 	items := make(map[string]string)
 	//for	day, aggregate :=range aggregates.items(){
 	for day, aggregate := range items {
-		conn.ZAdd("daily:country:"+day, redis.Z{Member: aggregate})
+		conn.ZAdd(ctx, "daily:country:"+day, &redis.Z{Member: aggregate})
 		delete(aggregates, day)
 	}
 }
@@ -704,6 +735,7 @@ type deque struct {
 
 //将日志拷贝到redis中
 func copy_logs_to_redis(conn *redis.Client, path string, channel string, count string, limit int, quit_when_done bool) {
+	ctx := context.Background()
 	count = "10"
 	limit = 300
 	quit_when_done = true
@@ -735,7 +767,7 @@ func copy_logs_to_redis(conn *redis.Client, path string, channel string, count s
 			for block != "" {
 				//block = inp.read(2 * *17)
 				block = ""
-				conn.Append(channel+logfile, block)
+				conn.Append(ctx, channel+logfile, block)
 			}
 		}
 		// 提醒监听者，文件已经准备就绪。
@@ -763,13 +795,14 @@ func copy_logs_to_redis(conn *redis.Client, path string, channel string, count s
 
 // 对Redis进行清理的详细步骤。
 func _clean(conn *redis.Client, channel string, waiting []deque, count int64) int {
+	ctx := context.Background()
 	if len(waiting) == 0 {
 		return 0
 	}
 	w0 := waiting[0].logfile
 	//如果ret和count相等则代表日志被完全分析处理了
-	if ret, _ := conn.Get(channel + w0 + ":done").Int64(); ret == count {
-		conn.Del(channel+w0, channel+w0+":done")
+	if ret, _ := conn.Get(ctx, channel+w0+":done").Int64(); ret == count {
+		conn.Del(ctx, channel+w0, channel+w0+":done")
 		return waiting[len(waiting)-1].fsize
 	}
 	return 0
@@ -777,6 +810,7 @@ func _clean(conn *redis.Client, channel string, waiting []deque, count int64) in
 
 //从redis中处理日志 客户端获取日志  然后在本地进行聚合处理 处理结束后上报给redis
 func process_logs_from_redis(conn *redis.Client, id string, callback func(client *redis.Client, line string)) {
+	ctx := context.Background()
 	for true {
 		// 获取文件列表。
 		fdata := fetch_pending_messages(conn, id)
@@ -809,7 +843,7 @@ func process_logs_from_redis(conn *redis.Client, id string, callback func(client
 				callback(conn, "")
 
 				// 报告日志已经处理完毕。
-				conn.Incr(strconv.Itoa(ch) + logfile + ":done")
+				conn.Incr(ctx, strconv.Itoa(ch)+logfile+":done")
 			}
 		}
 		if fdata == nil {
@@ -869,5 +903,6 @@ func readblocks_gz(conn *redis.Client, key string) {
 }
 
 func main() {
-	core.ClearAllKeys(redisCli)
+	ctx := context.Background()
+	core.ClearAllKeys(ctx, redisCli)
 }

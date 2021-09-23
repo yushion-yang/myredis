@@ -1,7 +1,8 @@
 package main
 
 import (
-	"github.com/go-redis/redis"
+	"context"
+	"github.com/go-redis/redis/v8"
 	"redis-learn/core"
 )
 
@@ -9,7 +10,8 @@ var redisCli *redis.Client
 
 //初始化连接
 func init() {
-	redisCli = core.InitRedis("127.0.0.1:6379", "", 0)
+	ctx := context.Background()
+	redisCli = core.InitRedis(ctx, "127.0.0.1:6379", "", 0)
 }
 
 //采用分块http可以实现生成并发送增量式数据 websocket可以实现服务器推送（更佳）
@@ -17,5 +19,6 @@ func init() {
 //然后执行过滤再返回给客户端
 
 func main() {
-	core.ClearAllKeys(redisCli)
+	ctx := context.Background()
+	core.ClearAllKeys(ctx, redisCli)
 }
