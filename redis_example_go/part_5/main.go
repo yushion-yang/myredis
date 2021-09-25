@@ -7,6 +7,7 @@ import (
 	"github.com/pkg/errors"
 	"math"
 	"redis-learn/core"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -144,19 +145,21 @@ func update_counter(conn *redis.Client, name string, count int64, now int64) {
 }
 
 //
-func get_counter(conn *redis.Client, name string, precision int) {
+func get_counter(conn *redis.Client, name string, precision int) []int {
+	ctx := context.Background()
 	// 取得存储着计数器数据的键的名字。
-	//hash := fmt.Sprintf("%v:%v",precision, name)
-	// 从Redis里面取出计数器数据。
-	//data := conn.HGetAll(ctx,"count:" + hash).Val()
-	// 将计数器数据转换成指定的格式。
-	//to_return := make([]int,0)
-	//for key, value :=range data	{
-	//to_return = append( (int(key), int(value)))
-	// 对数据进行排序，把旧的数据样本排在前面。
-	//}
-	//to_return.sort()
-	//return to_return
+	hash := fmt.Sprintf("%v:%v", precision, name)
+	//从Redis里面取出计数器数据。
+	data := conn.HGetAll(ctx, "count:"+hash).Val()
+	//将计数器数据转换成指定的格式。
+	to_return := make([]int, 0)
+	for key := range data {
+		keyInt, _ := strconv.ParseInt(key, 10, 64)
+		to_return = append(to_return, int(keyInt))
+		//对数据进行排序，把旧的数据样本排在前面。
+	}
+	sort.Sort(sort.IntSlice(to_return))
+	return to_return
 }
 
 //清除计数器
@@ -381,6 +384,7 @@ func ip_to_score(ip_address string) int64 {
 // <start id:="_1314_14473_9191"/>
 // 这个函数在执行时需要给定GeoLiteCity-Blocks.csv文件所在的位置。
 //将 csv文件的城市和ip导入到redis中
+// 略过:不转换
 func import_ips_to_redis(conn *redis.Client, filename string) {
 	//csv_file := csv.reader(open(filename, "rb"))
 	//for count, row in enumerate(csv_file):
@@ -406,6 +410,7 @@ func import_ips_to_redis(conn *redis.Client, filename string) {
 // <start id:="_1314_14473_9194"/>
 // 这个函数在执行时需要给定GeoLiteCity-Location.csv文件所在的位置。
 //将城市信息导入到redis中
+// 略过：不转换
 func import_cities_to_redis(conn *redis.Client, filename string) {
 	//for row in csv.reader(open(filename, "rb")):
 	//if len(row) < 4 or not row[0].isdigit():
@@ -424,6 +429,7 @@ func import_cities_to_redis(conn *redis.Client, filename string) {
 // 代码清单 5-12
 // <start id:="_1314_14473_9197"/>
 //通过ip查找城市
+// 略过：转换难
 func find_city_by_ip(conn *redis.Client, ip_address string) {
 	// 将IP地址转换为分值以便执行ZREVRANGEBYSCORE命令。
 	//if isinstance(ip_address, str) { //A
@@ -479,6 +485,7 @@ func set_config(conn *redis.Client, type_ string, component string, config strin
 //CONFIGS := {}
 //CHECKED := {}
 //获取配置	从redis中获取组件所使用的配置 然后跟当前使用的配置进行比对 不一致则更新
+// 略过：非redis操作
 func get_config(conn *redis.Client, type_ string, component string, wait int) {
 	//wait =1
 	//key := fmt.Sprintf("config:%v:%v",type_, component)
